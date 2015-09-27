@@ -1,6 +1,6 @@
 from __future__ import division
 # The following demo dashboard is a mock up of a simple trading application for interest rate swaps.
-# It is based upon data_tables(_server).py/curs
+# It is based upon bokeh/examples/glyphs/data_tables_server.py 
 
 from bokeh.models.widgets import TextInput, Select, Button # for new trades
 from bokeh.models.widgets import DataTable, TableColumn, StringFormatter, NumberFormatter, StringEditor, IntEditor, NumberEditor, SelectEditor
@@ -16,6 +16,8 @@ from bokeh.server.app import bokeh_app
 from threading import Thread
 import numpy as np
 import time
+
+import ui
 
 # global variables to maintain state. Not the best of solutions but it works for a demo.
 ds_prev = None          # table of previous positions
@@ -45,21 +47,29 @@ def create(new_df, df):
     plot_rates = figure(
        y_range=[0.00, 0.03], title="Swap Rates",
        x_axis_label='Maturity (yr)', y_axis_label='Rate ( / yr )',
-       width=1000, height=500
+       width=1000, height=400
     )
-    plot_rates.line("Maturity","Live", source=ds_prev, color="#396285", legend="Live")
-    plot_rates.circle("Maturity","Live", source=ds_prev, fill_color="#396285", size=8, legend="Live")
-    plot_rates.line("Maturity","Close", source=ds_prev, color="#CE603D", legend="Close")
-    plot_rates.circle("Maturity","Close", source=ds_prev, fill_color="#CE603D", size=8, legend="Close")
+
+
+
+    plot_rates.line("Maturity","Live", source=ds_prev, color=ui.LIVE_COLOR, legend="Live")
+    plot_rates.circle("Maturity","Live", source=ds_prev, fill_color=ui.LIVE_COLOR,
+                      line_color=ui.LIVE_COLOR, size=8, legend="Live")
+    plot_rates.line("Maturity","Close", source=ds_prev, color=ui.CLOSE_COLOR, legend="Close")
+    plot_rates.circle("Maturity","Close", source=ds_prev, fill_color=ui.CLOSE_COLOR,
+                      line_color=ui.CLOSE_COLOR, size=8, legend="Close")
+    ui.style_plot(plot_rates)
 
     # PNL - bar plot
     plot_pnl = figure(
             y_range=[-50000, 50000], title='PNL', x_axis_label='Maturity (yr)', 
-            width=1000, height=300
+            width=1000, height=200
     )
     plot_pnl.yaxis[0].formatter = NumeralTickFormatter(format="$ 0,0")
-    plot_pnl.rect(x="Maturity", y="Mid", width=1, height="PNL", source=ds_prev, fill_color="#CAB2D6")
-
+    plot_pnl.rect(x="Maturity", y="Mid", width=1, height="PNL", source=ds_prev,
+                  fill_color=ui.HIST_COLOR, line_color=ui.HIST_COLOR)
+    ui.style_plot(plot_pnl)
+    plot_pnl.xgrid.grid_line_color = None
 
     # Create DataTable widget from dataframe 'snapshot'
     columns = [
@@ -72,7 +82,7 @@ def create(new_df, df):
         TableColumn(field="PNL",        title="PNL",        editor=NumberEditor(step=0.1),    formatter=NumberFormatter(format="$ 0,0[.]00")),
     ]
 
-    data_table = DataTable(source=ds_prev, columns=columns, editable=True, width=1000)
+    data_table = DataTable(source=ds_prev, columns=columns, editable=True, width=1000, height=180)
 
     
     # Add ability to add new trades as a form
@@ -87,21 +97,16 @@ def create(new_df, df):
 
     # Create DataTable for New Trades
     ds_new = ColumnDataSource(new_df)
-    print 'new_df:'
-    print new_df
-    #if ds_new is not None and len(ds_new.data) > 0:
     new_trade_table = DataTable(source=ds_new, columns=columns, editable=True, width=1000)
     return vplot(plot_rates, plot_pnl, data_table, new_trade_entry, new_trade_table)
-    #else:
-    #    return vplot(plot_rates, plot_pnl, new_trade_entry, data_table) 
 
 
 def get_data():
     """ Import data from Excel into a pandas dataframe """    
     xls = 'swap_pnl_dashboard.xlsm'
     df = pd.read_excel(xls, sheetname='data', index_col=0, skip_footer=1)
-    print 'df_live, df_close', df['Live'], df['Close']
     return df
+
 
 def run():
     """ Initialize and show dashboard, begin simulating yield curve """
@@ -110,13 +115,17 @@ def run():
     # table for today's new trades
     new_df = init_df.drop(init_df.index) # same columns, no rows
     dashboard = create(new_df, init_df)
-    show(dashboard)
+    # show(dashboard)
+    ui.create_and_open(dashboard, cursession())
+
     # kick off 2-factor mean reverting process for yield curve
     Thread(target=background_thread, args=(ds_prev,)).start()
+    Thread(target=background_thread, args=(ds_new,)).start()
 
 
 def background_thread_gaussian(ds):
-    """Plot animation, update data if play is True, otherwise stop"""
+    """ Simulate yield curve as 2d normal process. Update Data Table """ 
+    
     try:
         while True:
             for i in np.hstack((np.linspace(1, -1, 100), np.linspace(-1, 1, 100))):
@@ -135,14 +144,10 @@ def background_thread_gaussian(ds):
             cursession().store_objects(ds)
             time.sleep(0.1)
     except:
-        # logger.exception("An error occurred")
         raise
 
 def background_thread(ds):
-    """Plot animation, update data if play is True, otherwise stop
-    
-        This version uses a two factor mean-reverting process
-    """
+    """ Simulate yield curve as 2d mean-reverting process. Update Data Table """ 
     
     vol = 5e-5 
     mr = 0.001
@@ -165,12 +170,10 @@ def background_thread(ds):
             cursession().store_objects(ds)
             time.sleep(0.1)
     except:
-        # logger.exception("An error occurred")
         raise
 
 
 def bookit_clicked():
-    print("button_handler: stop click")
     size = float(new_notional.value)
     rate = float(new_rate.value)
     mat  = float(new_maturity.value)
@@ -190,16 +193,17 @@ def bookit_clicked():
     ds_new.data["Change"].append(change) 
     pnl = size * duration * change
     ds_new.data["PNL"].append(pnl) 
-    ds_new.data["Slope"].append(0.0) 
-    ds_new.data["Level"].append(0.0) 
+    slope = ds_prev.data["Slope"][idx]
+    level = ds_prev.data["Level"][idx]
+    ds_new.data["Slope"].append(slope) 
+    ds_new.data["Level"].append(level) 
     
-    #import pdb; pdb.set_trace()    
-    print ds_new.data
     cursession().store_objects(ds_new)
 
 if __name__ == "__main__":
     name = "pnl_dashboard" # name of document to push to bokeh server
     output_server(name) # see io.py
+
     run()
 
     cursession().poll_document(curdoc(), 0.1) # poll document for updates every 0.1 sec
